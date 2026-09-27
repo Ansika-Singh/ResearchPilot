@@ -455,7 +455,7 @@ export async function runResearch(
     session.metrics.completedAt = Date.now();
     session.metrics.durationMs = session.metrics.completedAt - session.metrics.startedAt;
     session.metrics.finalResponseLength = session.report.length;
-    await emit("final_report", "Final report · research run complete", "The final report was synthesized from this run's actual sources, tool results, and verification outcome.", { verification: session.verification?.status, reportCharacters: session.report.length, metrics: session.metrics });
+    await emit("final_report", "Final report · research run complete", "The final report was synthesized from this run's actual sources, tool results, and verification outcome.", { verification: session.verification?.status, reportCharacters: session.report.length, metrics: session.metrics, report: session.report });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The research workflow failed unexpectedly.";
     session.status = "failed";

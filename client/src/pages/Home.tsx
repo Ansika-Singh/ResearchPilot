@@ -104,13 +104,27 @@ export default function Home() {
   useEffect(() => {
     if (!activeId) return;
     setStreamState("connecting");
-    const stream = new EventSource(`/api/research/${activeId}/events`);
+    const goalParam = localSession?.goal ? `?goal=${encodeURIComponent(localSession.goal)}` : "";
+    const stream = new EventSource(`/api/research/${activeId}/events${goalParam}`);
     stream.onopen = () => setStreamState("connected");
     stream.addEventListener("agent_event", raw => {
       try {
         const event = JSON.parse((raw as MessageEvent<string>).data) as AgentEvent;
         setLiveEvents(current => current.some(item => item.id === event.id) ? current : [...current, event].sort((a, b) => a.id - b.id));
-        if (event.stage === "final_report" || event.stage === "error") {
+        if (event.stage === "final_report") {
+          const reportText = (event.details as any)?.report;
+          setLocalSession(curr => curr ? {
+            ...curr,
+            status: "completed",
+            ...(reportText ? { report: reportText } : {}),
+            verification: (event.details as any)?.verification ? { status: (event.details as any).verification, issues: [], unsupportedClaims: [], missingInformation: [], requiredActions: [] } : curr.verification,
+          } : curr);
+          window.setTimeout(() => {
+            void utils.research.get.invalidate({ id: activeId });
+            void utils.research.history.invalidate();
+          }, 250);
+        } else if (event.stage === "error") {
+          setLocalSession(curr => curr ? { ...curr, status: "failed" } : curr);
           window.setTimeout(() => {
             void utils.research.get.invalidate({ id: activeId });
             void utils.research.history.invalidate();

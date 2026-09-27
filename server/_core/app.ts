@@ -5,7 +5,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
-import { getResearchSession, isResearchActive, subscribeToResearch } from "../research/runtime";
+import { ensureResearchRunning, getResearchSession, isResearchActive, subscribeToResearch } from "../research/runtime";
 
 export function createExpressApp(): Express {
   const app = express();
@@ -40,7 +40,12 @@ export function createExpressApp(): Express {
     res.flushHeaders();
     res.write("retry: 1500\n\n");
     try {
-      const session = await getResearchSession(sessionId);
+      let session = await getResearchSession(sessionId);
+      const fallbackGoal = typeof req.query.goal === "string" ? req.query.goal.trim() : "";
+      if (!session && fallbackGoal) {
+        ensureResearchRunning(sessionId, send, fallbackGoal);
+        session = await getResearchSession(sessionId);
+      }
       if (!session) {
         res.write(`event: stream_error\ndata: ${JSON.stringify({ error: "Research session not found." })}\n\n`);
         closed = true;
@@ -51,7 +56,10 @@ export function createExpressApp(): Express {
       session.events.forEach(send);
       ready = true;
       buffered.sort((a, b) => a.id - b.id).forEach(send);
-      if (!isResearchActive(sessionId)) {
+
+      if (session.status === "running") {
+        ensureResearchRunning(sessionId, send, fallbackGoal || session.goal);
+      } else if (!isResearchActive(sessionId)) {
         res.write("event: stream_complete\ndata: {}\n\n");
         closed = true;
         unsubscribe();

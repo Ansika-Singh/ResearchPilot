@@ -1915,7 +1915,7 @@ async function runResearch(session, sink, options = {}) {
     session.metrics.completedAt = Date.now();
     session.metrics.durationMs = session.metrics.completedAt - session.metrics.startedAt;
     session.metrics.finalResponseLength = session.report.length;
-    await emit("final_report", "Final report \xB7 research run complete", "The final report was synthesized from this run's actual sources, tool results, and verification outcome.", { verification: session.verification?.status, reportCharacters: session.report.length, metrics: session.metrics });
+    await emit("final_report", "Final report \xB7 research run complete", "The final report was synthesized from this run's actual sources, tool results, and verification outcome.", { verification: session.verification?.status, reportCharacters: session.report.length, metrics: session.metrics, report: session.report });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The research workflow failed unexpectedly.";
     session.status = "failed";
@@ -1982,9 +1982,11 @@ async function runResearch(session, sink, options = {}) {
 var sessions = /* @__PURE__ */ new Map();
 var active = /* @__PURE__ */ new Set();
 var listeners = /* @__PURE__ */ new Map();
+var runOptions = /* @__PURE__ */ new Map();
 async function startResearchRun(goal, options = {}) {
   const session = createResearchSession(goal, options.context);
   sessions.set(session.id, session);
+  runOptions.set(session.id, options);
   active.add(session.id);
   try {
     await saveSession(session);
@@ -2002,17 +2004,46 @@ async function startResearchRun(goal, options = {}) {
   });
   return session;
 }
+function ensureResearchRunning(sessionId, onEvent, fallbackGoal) {
+  let session = sessions.get(sessionId);
+  if (!session && fallbackGoal) {
+    session = createResearchSession(fallbackGoal);
+    session.id = sessionId;
+    sessions.set(sessionId, session);
+  }
+  if (!session) return null;
+  if (session.status !== "running") return Promise.resolve(session);
+  if (active.has(sessionId)) return null;
+  active.add(sessionId);
+  const options = runOptions.get(sessionId) || {};
+  return runResearch(session, (event) => {
+    sessions.set(session.id, session);
+    if (onEvent) onEvent(event);
+    Array.from(listeners.get(sessionId) ?? []).forEach((listener) => listener(event));
+  }, options).then((result) => {
+    sessions.set(result.id, result);
+    return result;
+  }).finally(() => {
+    active.delete(sessionId);
+  });
+}
 async function getResearchSession(id) {
   const inMemory = sessions.get(id);
   if (inMemory) return inMemory;
   const stored = await loadSession(id);
-  if (stored?.status === "running") return markInterrupted(stored);
+  if (stored?.status === "running") {
+    if (Date.now() - stored.updatedAt > 3e5) {
+      return markInterrupted(stored);
+    }
+  }
   return stored;
 }
 async function getResearchHistory(limit = 30) {
   const stored = await listSessions(limit);
   for (const session of stored) {
-    if (session.status === "running" && !sessions.has(session.id)) await markInterrupted(session);
+    if (session.status === "running" && !sessions.has(session.id) && Date.now() - session.updatedAt > 3e5) {
+      await markInterrupted(session);
+    }
   }
   const merged = new Map(stored.map((session) => [session.id, session]));
   Array.from(sessions.values()).forEach((session) => merged.set(session.id, session));
@@ -2159,7 +2190,12 @@ data: ${JSON.stringify(event)}
     res.flushHeaders();
     res.write("retry: 1500\n\n");
     try {
-      const session = await getResearchSession(sessionId);
+      let session = await getResearchSession(sessionId);
+      const fallbackGoal = typeof req.query.goal === "string" ? req.query.goal.trim() : "";
+      if (!session && fallbackGoal) {
+        ensureResearchRunning(sessionId, send, fallbackGoal);
+        session = await getResearchSession(sessionId);
+      }
       if (!session) {
         res.write(`event: stream_error
 data: ${JSON.stringify({ error: "Research session not found." })}
@@ -2173,7 +2209,9 @@ data: ${JSON.stringify({ error: "Research session not found." })}
       session.events.forEach(send);
       ready = true;
       buffered.sort((a, b) => a.id - b.id).forEach(send);
-      if (!isResearchActive(sessionId)) {
+      if (session.status === "running") {
+        ensureResearchRunning(sessionId, send, fallbackGoal || session.goal);
+      } else if (!isResearchActive(sessionId)) {
         res.write("event: stream_complete\ndata: {}\n\n");
         closed = true;
         unsubscribe();

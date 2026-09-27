@@ -7,9 +7,12 @@ const sessions = new Map<string, ResearchSession>();
 const active = new Set<string>();
 const listeners = new Map<string, Set<Listener>>();
 
+const runOptions = new Map<string, { context?: string; file?: { name: string; content: string } }>();
+
 export async function startResearchRun(goal: string, options: { context?: string; file?: { name: string; content: string } } = {}): Promise<ResearchSession> {
   const session = createResearchSession(goal, options.context);
   sessions.set(session.id, session);
+  runOptions.set(session.id, options);
   active.add(session.id);
   try { await saveSession(session); } catch (error) {
     const message = error instanceof Error ? error.message : "Session storage unavailable.";
@@ -26,18 +29,52 @@ export async function startResearchRun(goal: string, options: { context?: string
   return session;
 }
 
+export function ensureResearchRunning(
+  sessionId: string,
+  onEvent?: (event: AgentEvent) => void,
+  fallbackGoal?: string
+): Promise<ResearchSession> | null {
+  let session = sessions.get(sessionId);
+  if (!session && fallbackGoal) {
+    session = createResearchSession(fallbackGoal);
+    session.id = sessionId;
+    sessions.set(sessionId, session);
+  }
+  if (!session) return null;
+  if (session.status !== "running") return Promise.resolve(session);
+  if (active.has(sessionId)) return null;
+  active.add(sessionId);
+  const options = runOptions.get(sessionId) || {};
+  return runResearch(session, event => {
+    sessions.set(session!.id, session!);
+    if (onEvent) onEvent(event);
+    Array.from(listeners.get(sessionId) ?? []).forEach(listener => listener(event));
+  }, options).then(result => {
+    sessions.set(result.id, result);
+    return result;
+  }).finally(() => {
+    active.delete(sessionId);
+  });
+}
+
 export async function getResearchSession(id: string): Promise<ResearchSession | null> {
   const inMemory = sessions.get(id);
   if (inMemory) return inMemory;
   const stored = await loadSession(id);
-  if (stored?.status === "running") return markInterrupted(stored);
+  if (stored?.status === "running") {
+    if (Date.now() - stored.updatedAt > 300_000) {
+      return markInterrupted(stored);
+    }
+  }
   return stored;
 }
 
 export async function getResearchHistory(limit = 30): Promise<ResearchSession[]> {
   const stored = await listSessions(limit);
   for (const session of stored) {
-    if (session.status === "running" && !sessions.has(session.id)) await markInterrupted(session);
+    if (session.status === "running" && !sessions.has(session.id) && Date.now() - session.updatedAt > 300_000) {
+      await markInterrupted(session);
+    }
   }
   const merged = new Map(stored.map(session => [session.id, session]));
   Array.from(sessions.values()).forEach(session => merged.set(session.id, session));
