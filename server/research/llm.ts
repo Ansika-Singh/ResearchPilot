@@ -60,19 +60,15 @@ const compatibleProvider: LLMProvider = {
       throw new Error("No LLM API key configured. Please set LLM_API_KEY in your .env file.");
     }
     const endpoint = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
-    let maxTokens = 1800;
-    if (input.name.includes("action") || input.name.includes("decision")) maxTokens = 1200;
-    else if (input.name.includes("plan")) maxTokens = 1500;
-    else if (input.name.includes("observation")) maxTokens = 1500;
-    else if (input.name.includes("verification")) maxTokens = 1200;
-    else if (input.name.includes("report") || input.name.includes("synthesis")) maxTokens = 2500;
+    let maxTokens = 3000;
+    if (input.name.includes("report") || input.name.includes("synthesis")) maxTokens = 4500;
 
     const tokenLimit = input.model.startsWith("gpt-5") || input.model.startsWith("o1") || input.model.startsWith("o3")
       ? { max_completion_tokens: maxTokens }
       : { max_tokens: maxTokens };
 
     let activeModel = input.model;
-    const maxRetries = 3;
+    const maxRetries = 4;
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       try {
         const response = await fetch(endpoint, {
@@ -96,26 +92,18 @@ const compatibleProvider: LLMProvider = {
 
         const errBody = await response.text().catch(() => "");
         if (response.status === 429 && attempt < maxRetries) {
-          const isDailyQuota = errBody.includes("tokens per day") || errBody.includes("TPD");
+          const isDailyQuota = errBody.includes("on tokens per day (TPD)") || errBody.includes("on requests per day (RPD)");
           if (isDailyQuota) {
-            const nextModel = activeModel.includes("20b")
-              ? "openai/gpt-oss-120b"
-              : activeModel.includes("120b")
-                ? "qwen/qwen3.8-27b"
-                : "openai/gpt-oss-20b";
+            const nextModel = activeModel.includes("120b")
+              ? "qwen/qwen3.8-27b"
+              : "openai/gpt-oss-120b";
             console.warn(`[LLM] Model ${activeModel} reached daily quota. Switching to ${nextModel}...`);
             activeModel = nextModel;
             await new Promise(resolve => setTimeout(resolve, 500));
             continue;
           }
-          if (activeModel.includes("120b") && attempt === 0) {
-            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to openai/gpt-oss-20b...`);
-            activeModel = "openai/gpt-oss-20b";
-            await new Promise(resolve => setTimeout(resolve, 500));
-            continue;
-          }
           const retryHeader = response.headers.get("retry-after");
-          let delayMs = 2000;
+          let delayMs = 3000;
           if (retryHeader && Number.isFinite(Number(retryHeader))) {
             delayMs = Math.max(1, Number(retryHeader)) * 1000;
           } else {
@@ -123,10 +111,10 @@ const compatibleProvider: LLMProvider = {
             if (match) {
               const minutes = match[1] ? parseFloat(match[1]) : 0;
               const seconds = match[2] ? parseFloat(match[2]) : 0;
-              delayMs = Math.ceil((minutes * 60 + seconds) * 1000) + 300;
+              delayMs = Math.ceil((minutes * 60 + seconds) * 1000) + 500;
             }
           }
-          const cappedDelay = Math.min(delayMs, 4_000);
+          const cappedDelay = Math.min(Math.max(delayMs, 2500), 15_000);
           console.warn(`[LLM] Rate limit reached. Backing off for ${cappedDelay}ms before retry (${attempt + 1}/${maxRetries})...`);
           await new Promise(resolve => setTimeout(resolve, cappedDelay));
           continue;
