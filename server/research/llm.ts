@@ -50,7 +50,7 @@ const builtinProvider: LLMProvider = {
 const compatibleProvider: LLMProvider = {
   name: "openai_compatible",
   async resolveModel() {
-    const model = process.env.LLM_MODEL?.trim() || "gpt-4o-mini";
+    const model = process.env.LLM_MODEL?.trim() || "openai/gpt-oss-120b";
     return model;
   },
   async completeStructured(input) {
@@ -96,8 +96,20 @@ const compatibleProvider: LLMProvider = {
 
         const errBody = await response.text().catch(() => "");
         if (response.status === 429 && attempt < maxRetries) {
-          if (activeModel.includes("120b")) {
-            console.warn(`[LLM] Model ${activeModel} hit quota/rate limit. Switching to openai/gpt-oss-20b...`);
+          const isDailyQuota = errBody.includes("tokens per day") || errBody.includes("TPD");
+          if (isDailyQuota) {
+            const nextModel = activeModel.includes("20b")
+              ? "openai/gpt-oss-120b"
+              : activeModel.includes("120b")
+                ? "qwen/qwen3.8-27b"
+                : "openai/gpt-oss-20b";
+            console.warn(`[LLM] Model ${activeModel} reached daily quota. Switching to ${nextModel}...`);
+            activeModel = nextModel;
+            await new Promise(resolve => setTimeout(resolve, 500));
+            continue;
+          }
+          if (activeModel.includes("120b") && attempt === 0) {
+            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to openai/gpt-oss-20b...`);
             activeModel = "openai/gpt-oss-20b";
             await new Promise(resolve => setTimeout(resolve, 500));
             continue;
