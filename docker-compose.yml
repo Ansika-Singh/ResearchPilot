@@ -1,0 +1,17 @@
+services:
+  researchpilot:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      PORT: "3000"
+      RESEARCH_STORAGE: sqlite
+      RESEARCH_DB_PATH: /app/data/researchpilot.sqlite
+    volumes:
+      - researchpilot-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  researchpilot-data:
