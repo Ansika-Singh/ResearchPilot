@@ -60,12 +60,12 @@ const compatibleProvider: LLMProvider = {
       throw new Error("No LLM API key configured. Please set LLM_API_KEY in your .env file.");
     }
     const endpoint = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
-    let maxTokens = 1200;
-    if (input.name.includes("action") || input.name.includes("decision")) maxTokens = 350;
-    else if (input.name.includes("plan")) maxTokens = 850;
-    else if (input.name.includes("observation")) maxTokens = 850;
-    else if (input.name.includes("verification")) maxTokens = 600;
-    else if (input.name.includes("report") || input.name.includes("synthesis")) maxTokens = 2200;
+    let maxTokens = 1800;
+    if (input.name.includes("action") || input.name.includes("decision")) maxTokens = 1200;
+    else if (input.name.includes("plan")) maxTokens = 1500;
+    else if (input.name.includes("observation")) maxTokens = 1500;
+    else if (input.name.includes("verification")) maxTokens = 1200;
+    else if (input.name.includes("report") || input.name.includes("synthesis")) maxTokens = 2500;
 
     const tokenLimit = input.model.startsWith("gpt-5") || input.model.startsWith("o1") || input.model.startsWith("o3")
       ? { max_completion_tokens: maxTokens }

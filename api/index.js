@@ -728,7 +728,57 @@ async function webSearch(query, maxResults = 5) {
     if (results.length) return results;
     lastError = candidate === cleanQuery && broadenedQuery !== cleanQuery ? "The exact search returned no parseable results; retrying a simplified query." : "The live search provider returned no parseable results for either the original or simplified query.";
   }
+  const fallback = await fallbackSearch(cleanQuery, maxResults);
+  if (fallback.length) return fallback;
   throw new Error(`${lastError} Try a shorter query without exact-phrase or site restrictions.`);
+}
+async function fallbackSearch(query, maxResults = 5) {
+  const results = [];
+  try {
+    const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=1`;
+    const wikiRes = await fetch(wikiUrl, { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(6e3) });
+    if (wikiRes.ok) {
+      const data = await wikiRes.json();
+      const items = data.query?.search || [];
+      for (const item of items.slice(0, 3)) {
+        const title = String(item.title || "");
+        const pageUrl = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
+        const snippet = stripHtml(item.snippet || "");
+        results.push({
+          title,
+          url: pageUrl,
+          domain: "en.wikipedia.org",
+          snippet: snippet.slice(0, 600)
+        });
+      }
+    }
+  } catch {
+  }
+  try {
+    if (results.length < maxResults) {
+      const crUrl = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=3`;
+      const crRes = await fetch(crUrl, { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(6e3) });
+      if (crRes.ok) {
+        const data = await crRes.json();
+        const items = data.message?.items || [];
+        for (const item of items) {
+          const title = Array.isArray(item.title) ? item.title[0] : item.title;
+          const url = item.URL || (item.DOI ? `https://doi.org/${item.DOI}` : null);
+          const snippet = item.abstract ? stripHtml(item.abstract) : item.container_title?.[0] ? `Published in: ${item.container_title[0]}` : "Research publication reference.";
+          if (title && url) {
+            results.push({
+              title: String(title).slice(0, 180),
+              url,
+              domain: new URL(url).hostname.replace(/^www\./, ""),
+              snippet: snippet.slice(0, 600)
+            });
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  return results.slice(0, maxResults);
 }
 function isBlockedAddress(address) {
   if (address === "::1" || address.startsWith("fc") || address.startsWith("fd") || address.startsWith("fe80:")) return true;
@@ -1183,12 +1233,12 @@ var compatibleProvider = {
       throw new Error("No LLM API key configured. Please set LLM_API_KEY in your .env file.");
     }
     const endpoint = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
-    let maxTokens = 1200;
-    if (input.name.includes("action") || input.name.includes("decision")) maxTokens = 350;
-    else if (input.name.includes("plan")) maxTokens = 850;
-    else if (input.name.includes("observation")) maxTokens = 850;
-    else if (input.name.includes("verification")) maxTokens = 600;
-    else if (input.name.includes("report") || input.name.includes("synthesis")) maxTokens = 2200;
+    let maxTokens = 1800;
+    if (input.name.includes("action") || input.name.includes("decision")) maxTokens = 1200;
+    else if (input.name.includes("plan")) maxTokens = 1500;
+    else if (input.name.includes("observation")) maxTokens = 1500;
+    else if (input.name.includes("verification")) maxTokens = 1200;
+    else if (input.name.includes("report") || input.name.includes("synthesis")) maxTokens = 2500;
     const tokenLimit = input.model.startsWith("gpt-5") || input.model.startsWith("o1") || input.model.startsWith("o3") ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens };
     let activeModel = input.model;
     const maxRetries = 3;

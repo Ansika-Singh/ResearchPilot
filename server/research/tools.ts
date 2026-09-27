@@ -103,7 +103,61 @@ export async function webSearch(query: string, maxResults = 5): Promise<Array<Pi
       ? "The exact search returned no parseable results; retrying a simplified query."
       : "The live search provider returned no parseable results for either the original or simplified query.";
   }
+
+  // Fallback to Wikipedia and scholarly CrossRef endpoints when web search HTML is blocked
+  const fallback = await fallbackSearch(cleanQuery, maxResults);
+  if (fallback.length) return fallback;
+
   throw new Error(`${lastError} Try a shorter query without exact-phrase or site restrictions.`);
+}
+
+async function fallbackSearch(query: string, maxResults = 5): Promise<Array<Pick<ResearchSource, "title" | "url" | "domain" | "snippet">>> {
+  const results: Array<Pick<ResearchSource, "title" | "url" | "domain" | "snippet">> = [];
+  try {
+    const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=1`;
+    const wikiRes = await fetch(wikiUrl, { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(6000) });
+    if (wikiRes.ok) {
+      const data = await wikiRes.json() as any;
+      const items = data.query?.search || [];
+      for (const item of items.slice(0, 3)) {
+        const title = String(item.title || "");
+        const pageUrl = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
+        const snippet = stripHtml(item.snippet || "");
+        results.push({
+          title,
+          url: pageUrl,
+          domain: "en.wikipedia.org",
+          snippet: snippet.slice(0, 600),
+        });
+      }
+    }
+  } catch {}
+
+  try {
+    if (results.length < maxResults) {
+      const crUrl = `https://api.crossref.org/works?query=${encodeURIComponent(query)}&rows=3`;
+      const crRes = await fetch(crUrl, { headers: { "user-agent": USER_AGENT }, signal: AbortSignal.timeout(6000) });
+      if (crRes.ok) {
+        const data = await crRes.json() as any;
+        const items = data.message?.items || [];
+        for (const item of items) {
+          const title = Array.isArray(item.title) ? item.title[0] : item.title;
+          const url = item.URL || (item.DOI ? `https://doi.org/${item.DOI}` : null);
+          const snippet = item.abstract ? stripHtml(item.abstract) : (item.container_title?.[0] ? `Published in: ${item.container_title[0]}` : "Research publication reference.");
+          if (title && url) {
+            results.push({
+              title: String(title).slice(0, 180),
+              url,
+              domain: new URL(url).hostname.replace(/^www\./, ""),
+              snippet: snippet.slice(0, 600),
+            });
+          }
+        }
+      }
+    }
+  } catch {}
+
+  return results.slice(0, maxResults);
 }
 
 function isBlockedAddress(address: string): boolean {
