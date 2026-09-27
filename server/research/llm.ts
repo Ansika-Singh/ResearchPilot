@@ -60,12 +60,19 @@ const compatibleProvider: LLMProvider = {
       throw new Error("No LLM API key configured. Please set LLM_API_KEY in your .env file.");
     }
     const endpoint = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
+    let maxTokens = 1200;
+    if (input.name.includes("action") || input.name.includes("decision")) maxTokens = 350;
+    else if (input.name.includes("plan")) maxTokens = 850;
+    else if (input.name.includes("observation")) maxTokens = 850;
+    else if (input.name.includes("verification")) maxTokens = 600;
+    else if (input.name.includes("report") || input.name.includes("synthesis")) maxTokens = 2200;
+
     const tokenLimit = input.model.startsWith("gpt-5") || input.model.startsWith("o1") || input.model.startsWith("o3")
-      ? { max_completion_tokens: 2500 }
-      : { max_tokens: 2500 };
+      ? { max_completion_tokens: maxTokens }
+      : { max_tokens: maxTokens };
 
     let activeModel = input.model;
-    const maxRetries = 4;
+    const maxRetries = 3;
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       try {
         const response = await fetch(endpoint, {
@@ -77,7 +84,7 @@ const compatibleProvider: LLMProvider = {
             response_format: { type: "json_schema", json_schema: { name: input.name, strict: false, schema: input.schema } },
             ...tokenLimit,
           }),
-          signal: AbortSignal.timeout(45_000),
+          signal: AbortSignal.timeout(25_000),
         });
 
         if (response.ok) {
@@ -92,11 +99,23 @@ const compatibleProvider: LLMProvider = {
           if (activeModel.includes("120b")) {
             console.warn(`[LLM] Model ${activeModel} hit quota/rate limit. Switching to openai/gpt-oss-20b...`);
             activeModel = "openai/gpt-oss-20b";
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, 500));
+            continue;
+          }
+          if (activeModel.includes("20b") && attempt === 0) {
+            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to alternate Groq model qwen/qwen3.8-27b...`);
+            activeModel = "qwen/qwen3.8-27b";
+            await new Promise(resolve => setTimeout(resolve, 500));
+            continue;
+          }
+          if (activeModel.includes("qwen") && attempt === 0) {
+            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to alternate Groq model openai/gpt-oss-20b...`);
+            activeModel = "openai/gpt-oss-20b";
+            await new Promise(resolve => setTimeout(resolve, 500));
             continue;
           }
           const retryHeader = response.headers.get("retry-after");
-          let delayMs = 3000;
+          let delayMs = 2000;
           if (retryHeader && Number.isFinite(Number(retryHeader))) {
             delayMs = Math.max(1, Number(retryHeader)) * 1000;
           } else {
@@ -104,10 +123,10 @@ const compatibleProvider: LLMProvider = {
             if (match) {
               const minutes = match[1] ? parseFloat(match[1]) : 0;
               const seconds = match[2] ? parseFloat(match[2]) : 0;
-              delayMs = Math.ceil((minutes * 60 + seconds) * 1000) + 600;
+              delayMs = Math.ceil((minutes * 60 + seconds) * 1000) + 300;
             }
           }
-          const cappedDelay = Math.min(delayMs, 12_000);
+          const cappedDelay = Math.min(delayMs, 4_000);
           console.warn(`[LLM] Rate limit reached. Backing off for ${cappedDelay}ms before retry (${attempt + 1}/${maxRetries})...`);
           await new Promise(resolve => setTimeout(resolve, cappedDelay));
           continue;

@@ -1183,9 +1183,15 @@ var compatibleProvider = {
       throw new Error("No LLM API key configured. Please set LLM_API_KEY in your .env file.");
     }
     const endpoint = base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
-    const tokenLimit = input.model.startsWith("gpt-5") || input.model.startsWith("o1") || input.model.startsWith("o3") ? { max_completion_tokens: 2500 } : { max_tokens: 2500 };
+    let maxTokens = 1200;
+    if (input.name.includes("action") || input.name.includes("decision")) maxTokens = 350;
+    else if (input.name.includes("plan")) maxTokens = 850;
+    else if (input.name.includes("observation")) maxTokens = 850;
+    else if (input.name.includes("verification")) maxTokens = 600;
+    else if (input.name.includes("report") || input.name.includes("synthesis")) maxTokens = 2200;
+    const tokenLimit = input.model.startsWith("gpt-5") || input.model.startsWith("o1") || input.model.startsWith("o3") ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens };
     let activeModel = input.model;
-    const maxRetries = 4;
+    const maxRetries = 3;
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       try {
         const response = await fetch(endpoint, {
@@ -1197,7 +1203,7 @@ var compatibleProvider = {
             response_format: { type: "json_schema", json_schema: { name: input.name, strict: false, schema: input.schema } },
             ...tokenLimit
           }),
-          signal: AbortSignal.timeout(45e3)
+          signal: AbortSignal.timeout(25e3)
         });
         if (response.ok) {
           const payload = await response.json();
@@ -1210,11 +1216,23 @@ var compatibleProvider = {
           if (activeModel.includes("120b")) {
             console.warn(`[LLM] Model ${activeModel} hit quota/rate limit. Switching to openai/gpt-oss-20b...`);
             activeModel = "openai/gpt-oss-20b";
-            await new Promise((resolve2) => setTimeout(resolve2, 1e3));
+            await new Promise((resolve2) => setTimeout(resolve2, 500));
+            continue;
+          }
+          if (activeModel.includes("20b") && attempt === 0) {
+            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to alternate Groq model qwen/qwen3.8-27b...`);
+            activeModel = "qwen/qwen3.8-27b";
+            await new Promise((resolve2) => setTimeout(resolve2, 500));
+            continue;
+          }
+          if (activeModel.includes("qwen") && attempt === 0) {
+            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to alternate Groq model openai/gpt-oss-20b...`);
+            activeModel = "openai/gpt-oss-20b";
+            await new Promise((resolve2) => setTimeout(resolve2, 500));
             continue;
           }
           const retryHeader = response.headers.get("retry-after");
-          let delayMs = 3e3;
+          let delayMs = 2e3;
           if (retryHeader && Number.isFinite(Number(retryHeader))) {
             delayMs = Math.max(1, Number(retryHeader)) * 1e3;
           } else {
@@ -1222,10 +1240,10 @@ var compatibleProvider = {
             if (match) {
               const minutes = match[1] ? parseFloat(match[1]) : 0;
               const seconds = match[2] ? parseFloat(match[2]) : 0;
-              delayMs = Math.ceil((minutes * 60 + seconds) * 1e3) + 600;
+              delayMs = Math.ceil((minutes * 60 + seconds) * 1e3) + 300;
             }
           }
-          const cappedDelay = Math.min(delayMs, 12e3);
+          const cappedDelay = Math.min(delayMs, 4e3);
           console.warn(`[LLM] Rate limit reached. Backing off for ${cappedDelay}ms before retry (${attempt + 1}/${maxRetries})...`);
           await new Promise((resolve2) => setTimeout(resolve2, cappedDelay));
           continue;
@@ -1370,7 +1388,7 @@ async function generateStructured(input) {
 }
 
 // app/prompts/index.ts
-var plannerPrompt = `You are ResearchPilot's planner. Convert the user's research goal into a compact, executable plan with 2\u20134 well-scoped steps; combine dependent subtasks when practical. Preserve explicit constraints and identify important unknowns, but do not turn every unknown into repeated broad searches. Choose only tools from: web_search, url_extractor, calculator, synthesis. A synthesis step describes the final output only and is performed after verification; never make report drafting a prerequisite for evidence verification. Never invent facts, URLs, sources, or evidence. A plan is not a final answer.`;
+var plannerPrompt = `You are ResearchPilot's planner. Convert the user's research goal into a compact, executable plan. You MUST output a JSON object containing a non-empty "steps" array with 2\u20134 concrete step objects, plus "objective" and "assumptions". Each step object MUST contain: id, title, objective, expectedInformation, completionCriteria, and preferredTool (one of: web_search, url_extractor, calculator, synthesis). Choose web_search for gathering external data and synthesis for final consolidation. Never invent facts or sources. Combine dependent subtasks when practical.`;
 var decisionPrompt = `You are the action-selection engine inside a stateful research agent with a finite action budget. Inspect the actual current plan, completed steps, observations, sources and gaps, then choose ONE next action: search, extract, calculate, read_file, replan, verify, or finish. Complete each distinct plan step once; do not repeat a search with a near-identical query or chase source-count targets the user did not request. Search only for one unresolved question at a time. For search, return one concise natural-language query (not a list, semicolon-separated batch, or instructions to run multiple searches); preserve material region, audience, format and date constraints. Extract only a source already present in state. If the goal requests arithmetic, use the calculator before verification. Calculator input must be arithmetic only, as one safe expression or up to six semicolon-separated arithmetic equations with optional '= expected result' checks; include no prose outside the equations. Choose read_file only when an uploaded file exists and is relevant. Replan when new evidence changes scope or important gaps remain. Verify before finish. Do not claim a tool ran. Do NOT output tool/function call structures (such as {"name": ...}); you must strictly return a JSON object with "action" and "reason" matching the decision schema.`;
 var observationPrompt = `You are the evidence analyst. Compare the just-completed real tool result with the current step and the user's constraints. You MUST output a complete JSON object matching the schema with ALL required fields: "summary" (what the tool found), "gaps" (array of concrete gaps or missing information), "stepComplete" (boolean: true if current step criteria are met, otherwise false), "nextMoveHint" (concise advice for next action), and "evidence" (array of claims supported by the text with claim, sourceId, supportingText, confidence, evidenceType). Cite source IDs exactly as provided, or use null. Never omit stepComplete, nextMoveHint, or evidence.`;
 var replannerPrompt = `You are ResearchPilot's re-planner. Revise the remaining plan based on the original goal, existing plan, completed work, and newly observed evidence/gaps. Keep useful completed steps, add or sharpen only relevant unresolved steps, and explain why the plan changed. Do not invent findings or discard user constraints.`;
@@ -1472,8 +1490,6 @@ var MAX_ACTION_TURNS = 12;
 var planSchema = {
   type: "object",
   properties: {
-    objective: { type: "string" },
-    assumptions: { type: "array", items: { type: "string" } },
     steps: { type: "array", minItems: 2, maxItems: 4, items: {
       type: "object",
       properties: {
@@ -1486,9 +1502,11 @@ var planSchema = {
       },
       required: ["id", "title", "objective", "expectedInformation", "completionCriteria", "preferredTool"],
       additionalProperties: false
-    } }
+    } },
+    objective: { type: "string" },
+    assumptions: { type: "array", items: { type: "string" } }
   },
-  required: ["objective", "assumptions", "steps"],
+  required: ["steps", "objective", "assumptions"],
   additionalProperties: false
 };
 var decisionSchema = {
@@ -1572,12 +1590,30 @@ function createResearchSession(goal, context = "") {
     metrics: newMetrics()
   };
 }
-function validatePlan(candidate) {
-  if (!candidate) throw new Error("Planner returned an empty plan.");
-  const rawSteps = Array.isArray(candidate.steps) ? candidate.steps : [];
-  if (rawSteps.length === 0) {
-    throw new Error("Planner returned no steps.");
-  }
+function createDefaultSteps(goal) {
+  return [
+    {
+      id: "step_1",
+      title: "Investigate primary evidence and baseline metrics",
+      objective: `Find core data points, costs, precedents, and facts relevant to: ${goal}`.slice(0, 600),
+      expectedInformation: "Factual evidence, industry benchmarks, and authoritative data",
+      completionCriteria: "Key evidence collected from authoritative sources",
+      preferredTool: "web_search",
+      status: "pending"
+    },
+    {
+      id: "step_2",
+      title: "Synthesize findings and assess feasibility",
+      objective: `Evaluate trade-offs, aggregate gathered evidence, and verify conclusions for: ${goal}`.slice(0, 600),
+      expectedInformation: "Clear, verifiable conclusions addressing the research goal",
+      completionCriteria: "Comprehensive summary and verification complete",
+      preferredTool: "synthesis",
+      status: "pending"
+    }
+  ];
+}
+function validatePlan(candidate, fallbackGoal = "") {
+  const rawSteps = Array.isArray(candidate?.steps) && candidate.steps.length > 0 ? candidate.steps : createDefaultSteps(fallbackGoal);
   const slicedSteps = rawSteps.slice(0, 4);
   if (slicedSteps.length === 1) {
     slicedSteps.push({
@@ -1608,8 +1644,8 @@ function validatePlan(candidate) {
     };
   });
   return {
-    objective: String(candidate.objective || "").slice(0, 500),
-    assumptions: Array.isArray(candidate.assumptions) ? candidate.assumptions.map(String).slice(0, 10) : [],
+    objective: String(candidate?.objective || `Investigate: ${fallbackGoal}`).slice(0, 500),
+    assumptions: Array.isArray(candidate?.assumptions) && candidate.assumptions.length > 0 ? candidate.assumptions.map(String).slice(0, 10) : ["Initial evidence should be gathered from primary authoritative sources"],
     steps
   };
 }
@@ -1672,13 +1708,20 @@ async function runResearch(session, sink, options = {}) {
   };
   try {
     await emit("planner", "Planner \xB7 decomposing the question", "The planning model is converting the fresh research goal into testable subtasks.", { goal: session.goal });
-    const plan = await structured({
-      promptName: "research_plan",
-      system: plannerPrompt,
-      user: JSON.stringify({ goal: session.goal, context: options.context ?? "", uploadedFile: options.file ? { name: options.file.name, characters: options.file.content.length } : null }),
-      schema: planSchema
-    });
-    session.plan = validatePlan(plan);
+    let plan;
+    try {
+      const candidatePlan = await structured({
+        promptName: "research_plan",
+        system: plannerPrompt,
+        user: JSON.stringify({ goal: session.goal, context: options.context ?? "", uploadedFile: options.file ? { name: options.file.name, characters: options.file.content.length } : null }),
+        schema: planSchema
+      });
+      plan = validatePlan(candidatePlan, session.goal);
+    } catch (planError) {
+      console.warn("[Research Engine] Planner generation failed; using goal-aligned fallback plan:", planError);
+      plan = validatePlan(null, session.goal);
+    }
+    session.plan = plan;
     await emit("planner", "Plan committed", `${session.plan.steps.length} subtasks generated; each includes completion criteria and a preferred tool.`, { plan: session.plan });
     let turn = 0;
     let finished = false;
@@ -1735,7 +1778,7 @@ async function runResearch(session, sink, options = {}) {
           user: JSON.stringify({ goal: session.goal, previousPlan: previous, state: contextSnapshot(session), focus: decision.replanFocus ?? latestObservation }),
           schema: { ...planSchema, properties: { ...planSchema.properties, reason: { type: "string" } }, required: [...planSchema.required, "reason"] }
         });
-        const revised = validatePlan(newPlan);
+        const revised = validatePlan(newPlan, session.goal);
         for (const nextStep of revised.steps) {
           const oldDone = previous?.steps.find((old) => old.status === "completed" && old.objective.toLowerCase() === nextStep.objective.toLowerCase());
           if (oldDone) nextStep.status = "completed";

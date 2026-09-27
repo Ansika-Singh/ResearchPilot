@@ -28,8 +28,6 @@ const MAX_ACTION_TURNS = 12;
 const planSchema = {
   type: "object",
   properties: {
-    objective: { type: "string" },
-    assumptions: { type: "array", items: { type: "string" } },
     steps: { type: "array", minItems: 2, maxItems: 4, items: {
       type: "object",
       properties: {
@@ -40,8 +38,10 @@ const planSchema = {
       required: ["id", "title", "objective", "expectedInformation", "completionCriteria", "preferredTool"],
       additionalProperties: false,
     } },
+    objective: { type: "string" },
+    assumptions: { type: "array", items: { type: "string" } },
   },
-  required: ["objective", "assumptions", "steps"],
+  required: ["steps", "objective", "assumptions"],
   additionalProperties: false,
 };
 const decisionSchema = {
@@ -98,12 +98,33 @@ export function createResearchSession(goal: string, context = ""): ResearchSessi
   };
 }
 
-function validatePlan(candidate: Partial<ResearchPlan> | null | undefined): ResearchPlan {
-  if (!candidate) throw new Error("Planner returned an empty plan.");
-  const rawSteps = Array.isArray(candidate.steps) ? candidate.steps : [];
-  if (rawSteps.length === 0) {
-    throw new Error("Planner returned no steps.");
-  }
+function createDefaultSteps(goal: string): PlanStep[] {
+  return [
+    {
+      id: "step_1",
+      title: "Investigate primary evidence and baseline metrics",
+      objective: `Find core data points, costs, precedents, and facts relevant to: ${goal}`.slice(0, 600),
+      expectedInformation: "Factual evidence, industry benchmarks, and authoritative data",
+      completionCriteria: "Key evidence collected from authoritative sources",
+      preferredTool: "web_search",
+      status: "pending",
+    },
+    {
+      id: "step_2",
+      title: "Synthesize findings and assess feasibility",
+      objective: `Evaluate trade-offs, aggregate gathered evidence, and verify conclusions for: ${goal}`.slice(0, 600),
+      expectedInformation: "Clear, verifiable conclusions addressing the research goal",
+      completionCriteria: "Comprehensive summary and verification complete",
+      preferredTool: "synthesis",
+      status: "pending",
+    },
+  ];
+}
+
+function validatePlan(candidate: Partial<ResearchPlan> | null | undefined, fallbackGoal = ""): ResearchPlan {
+  const rawSteps = Array.isArray(candidate?.steps) && candidate!.steps.length > 0
+    ? candidate!.steps
+    : createDefaultSteps(fallbackGoal);
   const slicedSteps = rawSteps.slice(0, 4);
   if (slicedSteps.length === 1) {
     slicedSteps.push({
@@ -134,8 +155,10 @@ function validatePlan(candidate: Partial<ResearchPlan> | null | undefined): Rese
     };
   });
   return {
-    objective: String(candidate.objective || "").slice(0, 500),
-    assumptions: Array.isArray(candidate.assumptions) ? candidate.assumptions.map(String).slice(0, 10) : [],
+    objective: String(candidate?.objective || `Investigate: ${fallbackGoal}`).slice(0, 500),
+    assumptions: Array.isArray(candidate?.assumptions) && candidate!.assumptions.length > 0
+      ? candidate!.assumptions.map(String).slice(0, 10)
+      : ["Initial evidence should be gathered from primary authoritative sources"],
     steps,
   };
 }
@@ -211,12 +234,19 @@ export async function runResearch(
 
   try {
     await emit("planner", "Planner · decomposing the question", "The planning model is converting the fresh research goal into testable subtasks.", { goal: session.goal });
-    const plan = await structured<ResearchPlan>({
-      promptName: "research_plan", system: plannerPrompt,
-      user: JSON.stringify({ goal: session.goal, context: options.context ?? "", uploadedFile: options.file ? { name: options.file.name, characters: options.file.content.length } : null }),
-      schema: planSchema,
-    });
-    session.plan = validatePlan(plan);
+    let plan: ResearchPlan;
+    try {
+      const candidatePlan = await structured<ResearchPlan>({
+        promptName: "research_plan", system: plannerPrompt,
+        user: JSON.stringify({ goal: session.goal, context: options.context ?? "", uploadedFile: options.file ? { name: options.file.name, characters: options.file.content.length } : null }),
+        schema: planSchema,
+      });
+      plan = validatePlan(candidatePlan, session.goal);
+    } catch (planError) {
+      console.warn("[Research Engine] Planner generation failed; using goal-aligned fallback plan:", planError);
+      plan = validatePlan(null, session.goal);
+    }
+    session.plan = plan;
     await emit("planner", "Plan committed", `${session.plan.steps.length} subtasks generated; each includes completion criteria and a preferred tool.`, { plan: session.plan });
 
     let turn = 0;
@@ -275,7 +305,7 @@ export async function runResearch(
           user: JSON.stringify({ goal: session.goal, previousPlan: previous, state: contextSnapshot(session), focus: decision.replanFocus ?? latestObservation }),
           schema: { ...planSchema, properties: { ...planSchema.properties, reason: { type: "string" } }, required: [...planSchema.required, "reason"] },
         });
-        const revised = validatePlan(newPlan);
+        const revised = validatePlan(newPlan, session.goal);
         // Preserve completion only where the new objective still matches a completed step.
         for (const nextStep of revised.steps) {
           const oldDone = previous?.steps.find(old => old.status === "completed" && old.objective.toLowerCase() === nextStep.objective.toLowerCase());
