@@ -2,7 +2,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { ResearchSource } from "@shared/research";
 
-const USER_AGENT = "ResearchPilot/1.0 (evidence research; contact: local app)";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 const MAX_PAGE_CHARS = 9_000;
 const MAX_FETCH_MS = 12_000;
 const MAX_DNS_MS = 3_000;

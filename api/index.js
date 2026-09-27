@@ -652,7 +652,7 @@ import { randomUUID } from "node:crypto";
 // server/research/tools.ts
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-var USER_AGENT = "ResearchPilot/1.0 (evidence research; contact: local app)";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 var MAX_PAGE_CHARS = 9e3;
 var MAX_FETCH_MS = 12e3;
 var MAX_DNS_MS = 3e3;
@@ -1215,18 +1215,6 @@ var compatibleProvider = {
         if (response.status === 429 && attempt < maxRetries) {
           if (activeModel.includes("120b")) {
             console.warn(`[LLM] Model ${activeModel} hit quota/rate limit. Switching to openai/gpt-oss-20b...`);
-            activeModel = "openai/gpt-oss-20b";
-            await new Promise((resolve2) => setTimeout(resolve2, 500));
-            continue;
-          }
-          if (activeModel.includes("20b") && attempt === 0) {
-            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to alternate Groq model qwen/qwen3.8-27b...`);
-            activeModel = "qwen/qwen3.8-27b";
-            await new Promise((resolve2) => setTimeout(resolve2, 500));
-            continue;
-          }
-          if (activeModel.includes("qwen") && attempt === 0) {
-            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to alternate Groq model openai/gpt-oss-20b...`);
             activeModel = "openai/gpt-oss-20b";
             await new Promise((resolve2) => setTimeout(resolve2, 500));
             continue;

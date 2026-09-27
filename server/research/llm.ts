@@ -102,18 +102,6 @@ const compatibleProvider: LLMProvider = {
             await new Promise(resolve => setTimeout(resolve, 500));
             continue;
           }
-          if (activeModel.includes("20b") && attempt === 0) {
-            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to alternate Groq model qwen/qwen3.8-27b...`);
-            activeModel = "qwen/qwen3.8-27b";
-            await new Promise(resolve => setTimeout(resolve, 500));
-            continue;
-          }
-          if (activeModel.includes("qwen") && attempt === 0) {
-            console.warn(`[LLM] Model ${activeModel} hit rate limit. Switching to alternate Groq model openai/gpt-oss-20b...`);
-            activeModel = "openai/gpt-oss-20b";
-            await new Promise(resolve => setTimeout(resolve, 500));
-            continue;
-          }
           const retryHeader = response.headers.get("retry-after");
           let delayMs = 2000;
           if (retryHeader && Number.isFinite(Number(retryHeader))) {
