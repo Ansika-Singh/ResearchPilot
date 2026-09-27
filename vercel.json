@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "name": "researchpilot",
   "outputDirectory": "dist/public",
   "rewrites": [
     {
